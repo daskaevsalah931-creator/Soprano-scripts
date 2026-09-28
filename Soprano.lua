@@ -1,9 +1,10 @@
 -- ==========================================
--- SOPRANOCLAN009 — ECLIPSE RIFT (RAYFIELD GUI)
+-- BAZZ — ECLIPSE RIFT (RAYFIELD GUI)
 -- Drill Array + Core Charge | Auto Farm | Слоями вниз
+-- + Watchdog (авто-восстановление) + Учёт радиуса
 -- KEY: soprano2026
 -- ==========================================
-print("🚀 SOPRANOCLAN009")
+print("🚀 BAZZ")
 
 -- =====================
 -- НАСТРОЙКИ
@@ -13,6 +14,7 @@ local CONFIG = {
     DELAY     = 0.15,
     REST_WAIT = 30,
     TIMEOUT_SEC = 60,
+    WORLD_RESET_DELAY = 3,
     GREEN_MAX_Y = -60,
     RADIUS_GREEN_X = 1,
     RADIUS_GREEN_Z = 1,
@@ -84,20 +86,20 @@ local START_ORE, START_TIME = countOre(), tick()
 local Rayfield = loadstring(game:HttpGet('https://sirius.menu/rayfield'))()
 
 local Window = Rayfield:CreateWindow({
-    Name = "SopranoClan009",
-    LoadingTitle = "SopranoClan009",
+    Name = "Bazz",
+    LoadingTitle = "Bazz",
     LoadingSubtitle = "Eclipse Rift Auto Farm",
     ConfigurationSaving = {
         Enabled = true,
-        FolderName = "SopranoClan009",
+        FolderName = "Bazz",
         FileName = "Config"
     },
     KeySystem = true,
     KeySettings = {
-        Title = "SopranoClan009 — Key",
+        Title = "Bazz — Key",
         Subtitle = "Введи ключ доступа",
-        Note = "Ключ у Soprano009",
-        FileName = "SopranoKey",
+        Note = "Ключ у Bazz",
+        FileName = "BazzKey",
         SaveKey = true,
         GrabKeyFromSite = false,
         Key = {"soprano2026"}
@@ -118,6 +120,20 @@ MainTab:CreateToggle({
     Flag = "AutoFarm",
     Callback = function(v)
         CONFIG.AUTO_FARM = v
+        if v then
+            getgenv().MagnusRunning = true
+            if getgenv().MagnusResume then
+                getgenv().MagnusResume()
+            elseif getgenv().MagnusStart then
+                getgenv().MagnusStart()
+            end
+            Rayfield:Notify({Title="Старт", Content="Фарм запущен", Duration=3})
+        else
+            if getgenv().MagnusStop then
+                getgenv().MagnusStop()
+            end
+            Rayfield:Notify({Title="Стоп", Content="Фарм остановлен", Duration=3})
+        end
         print("Auto Farm:", v)
     end,
 })
@@ -153,30 +169,6 @@ MainTab:CreateToggle({
 })
 
 MainTab:CreateSection("Управление")
-
-MainTab:CreateButton({
-    Name = "▶️ Запустить / Продолжить",
-    Callback = function()
-        getgenv().MagnusRunning = true
-        CONFIG.AUTO_FARM = true
-        if getgenv().MagnusResume then
-            getgenv().MagnusResume()
-        elseif getgenv().MagnusStart then
-            getgenv().MagnusStart()
-        end
-        Rayfield:Notify({Title="Старт", Content="Фарм запущен", Duration=3})
-    end,
-})
-
-MainTab:CreateButton({
-    Name = "⏹ Остановить фарм",
-    Callback = function()
-        if getgenv().MagnusStop then
-            getgenv().MagnusStop()
-        end
-        Rayfield:Notify({Title="Стоп", Content="Фарм остановлен", Duration=3})
-    end,
-})
 
 MainTab:CreateButton({
     Name = "🔄 Сброс позиции (с начала)",
@@ -227,13 +219,20 @@ SettingsTab:CreateSlider({
 })
 
 SettingsTab:CreateSlider({
+    Name = "WORLD_RESET_DELAY (пауза после рестарта)",
+    Range = {1, 30}, Increment = 1, Suffix = "с",
+    CurrentValue = 3, Flag = "WorldResetDelay",
+    Callback = function(v) CONFIG.WORLD_RESET_DELAY = v end,
+})
+
+SettingsTab:CreateSlider({
     Name = "TIMEOUT (макс. сек без прогресса)",
     Range = {10, 300}, Increment = 5, Suffix = "с",
     CurrentValue = 60, Flag = "TimeoutSec",
     Callback = function(v) CONFIG.TIMEOUT_SEC = v end,
 })
 
-SettingsTab:CreateSection("Радиус — ЗЕЛЁНЫЕ")
+SettingsTab:CreateSection("Радиус — ЗЕЛЁНЫЕ (Drill Array)")
 
 SettingsTab:CreateSlider({
     Name = "Green Width X", Range = {1, 10}, Increment = 1, Suffix = " блоков",
@@ -247,7 +246,7 @@ SettingsTab:CreateSlider({
     Callback = function(v) CONFIG.RADIUS_GREEN_Z = v end,
 })
 
-SettingsTab:CreateSection("Радиус — ЖЁЛТЫЕ")
+SettingsTab:CreateSection("Радиус — ЖЁЛТЫЕ (Core Charge)")
 
 SettingsTab:CreateSlider({
     Name = "Yellow Width X", Range = {1, 10}, Increment = 1, Suffix = " блоков",
@@ -301,13 +300,14 @@ task.spawn(function()
 end)
 
 -- =====================
--- ФАРМ (послойно, с защитой от рестартов)
+-- ФАРМ
 -- =====================
 local LP = game.Players.LocalPlayer
 local world, region, origin
 
 getgenv().MagnusRunning = false
 getgenv().MagnusThread = nil
+getgenv().WatchdogThread = nil
 getgenv().curX = nil
 getgenv().curY = nil
 getgenv().curZ = nil
@@ -370,9 +370,10 @@ local function farmOnce()
 
     region, origin = world:GetRegion(), world:GetOrigin()
 
-    -- Сброс позиции при смене мира
     local savedWorld = world
     if not getgenv().curY or getgenv().lastWorld ~= savedWorld then
+        getgenv().statusText = "новый мир — ждём "..CONFIG.WORLD_RESET_DELAY.."с"
+        task.wait(CONFIG.WORLD_RESET_DELAY)
         getgenv().curY = region.Max.Y
         getgenv().curX = region.Min.X
         getgenv().curZ = region.Min.Z
@@ -381,7 +382,6 @@ local function farmOnce()
         getgenv().statusText = "новый мир, Y="..getgenv().curY
     end
 
-    local emptyPasses = 0
     local lastProgress = tick()
 
     while getgenv().curY >= region.Min.Y do
@@ -396,7 +396,7 @@ local function farmOnce()
         end
 
         getgenv().curX = getgenv().curX or region.Min.X
-        getgenv().curZ = getgenv().curZ or region.Min.Z
+        local xStep = 1
 
         while getgenv().curX <= region.Max.X do
             if not getgenv().MagnusRunning then return true end
@@ -407,7 +407,8 @@ local function farmOnce()
                 return true
             end
 
-            local layerEmpty = true
+            getgenv().curZ = region.Min.Z
+            local zStep = 1
 
             while getgenv().curZ <= region.Max.Z do
                 if not getgenv().MagnusRunning then return true end
@@ -418,7 +419,6 @@ local function farmOnce()
                     return true
                 end
 
-                -- Таймаут
                 if tick() - lastProgress > CONFIG.TIMEOUT_SEC then
                     print("⏰ Таймаут "..CONFIG.TIMEOUT_SEC.." сек — выхожу")
                     getgenv().statusText = "таймаут, выхожу"
@@ -427,7 +427,6 @@ local function farmOnce()
 
                 local hasBlock = world:GetBlock(Vector3int16.new(getgenv().curX, getgenv().curY, getgenv().curZ))
                 if hasBlock then
-                    layerEmpty = false
                     local key = getBombKey(getgenv().curY)
                     local rX, rZ = getRadius(key)
 
@@ -439,42 +438,24 @@ local function farmOnce()
                     useBomb(key)
                     task.wait(CONFIG.DELAY)
 
-                    getgenv().curZ = getgenv().curZ + rZ
+                    zStep = math.max(rX, rZ)
+                    getgenv().curZ = getgenv().curZ + zStep
                     lastProgress = tick()
                 else
                     getgenv().curZ = getgenv().curZ + 1
                 end
             end
 
-            if layerEmpty then
-                emptyPasses = emptyPasses + 1
-            else
-                emptyPasses = 0
-            end
-
-            getgenv().curX = getgenv().curX + 1
-            getgenv().curZ = region.Min.Z
+            xStep = zStep
+            getgenv().curX = getgenv().curX + xStep
         end
 
-        -- Если много пустых рядов — идём ниже
-        if emptyPasses > 5 then
-            getgenv().curY = getgenv().curY - 1
-            getgenv().curX = region.Min.X
-            getgenv().curZ = region.Min.Z
-            emptyPasses = 0
-            print("⛏ Слой: Y="..getgenv().curY)
-            getgenv().statusText = "слой Y="..getgenv().curY
-            lastProgress = tick()
-        else
-            -- Слой полностью закончился — идём ниже
-            getgenv().curY = getgenv().curY - 1
-            getgenv().curX = region.Min.X
-            getgenv().curZ = region.Min.Z
-            emptyPasses = 0
-            print("⛏ Слой: Y="..getgenv().curY)
-            getgenv().statusText = "слой Y="..getgenv().curY
-            lastProgress = tick()
-        end
+        getgenv().curY = getgenv().curY - 1
+        getgenv().curX = region.Min.X
+        getgenv().curZ = region.Min.Z
+        print("⛏ Слой: Y="..getgenv().curY)
+        getgenv().statusText = "слой Y="..getgenv().curY
+        lastProgress = tick()
     end
 
     getgenv().curX, getgenv().curY, getgenv().curZ = nil, nil, nil
@@ -496,6 +477,33 @@ local function startFarm()
 
         while getgenv().MagnusRunning do
             if CONFIG.AUTO_FARM then
+                if getgenv().WatchdogThread then
+                    if coroutine.status(getgenv().WatchdogThread) ~= "dead" then
+                        task.cancel(getgenv().WatchdogThread)
+                    end
+                end
+
+                local startTick = tick()
+                local startX, startY, startZ = getgenv().curX, getgenv().curY, getgenv().curZ
+
+                getgenv().WatchdogThread = task.spawn(function()
+                    while getgenv().MagnusRunning do
+                        task.wait(10)
+                        local now = tick()
+                        local moved = (getgenv().curX ~= startX) or (getgenv().curY ~= startY) or (getgenv().curZ ~= startZ)
+                        if moved then
+                            startTick = now
+                            startX, startY, startZ = getgenv().curX, getgenv().curY, getgenv().curZ
+                        elseif now - startTick > CONFIG.TIMEOUT_SEC then
+                            print("🐕 Watchdog: скрипт застрял — сбрасываю позицию")
+                            getgenv().curX, getgenv().curY, getgenv().curZ = nil, nil, nil
+                            getgenv().lastWorld = nil
+                            startTick = now
+                            startX, startY, startZ = nil, nil, nil
+                        end
+                    end
+                end)
+
                 local ok = farmOnce()
                 if not ok and getgenv().MagnusRunning then task.wait(3) end
             end
@@ -532,7 +540,6 @@ getgenv().MagnusStop = stopFarm
 getgenv().MagnusResume = resumeFarm
 getgenv().MagnusResetPos = resetPos
 
--- Клавиша T
 game:GetService("UserInputService").InputBegan:Connect(function(i, g)
     if not g and i.KeyCode == Enum.KeyCode.T then
         if getgenv().MagnusRunning then
@@ -545,4 +552,4 @@ game:GetService("UserInputService").InputBegan:Connect(function(i, g)
     end
 end)
 
-print("✅ Скрипт загружен. Ключ: soprano2026")
+print("✅ BAZZ загружен. Ключ: soprano2026")
